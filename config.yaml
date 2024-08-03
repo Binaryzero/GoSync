@@ -1,0 +1,8 @@
+sync_pairs:
+  - source: C:\Users\willi\Downloads
+    target: C:\Tmp
+
+ignore:
+  - "*.tmp"
+  - "temp/*"
+  - ".git/*"
