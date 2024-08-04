@@ -74,6 +74,27 @@ func syncFile(sourcePath, targetPath string) error {
 	}
 	defer sourceFile.Close()
 
+	// Calculate source file hash
+	sourceHash, err := getFileHash(sourcePath)
+	if err != nil {
+		return fmt.Errorf("error calculating source file hash: %w", err)
+	}
+
+	// Check if target file exists and calculate its hash
+	targetHash, err := getFileHash(targetPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("error calculating target file hash: %w", err)
+	}
+
+	// Compare hashes
+	if sourceHash == targetHash {
+		logrus.WithFields(logrus.Fields{
+			"source": sourcePath,
+			"target": targetPath,
+		}).Info("Files are identical, skipping sync")
+		return nil
+	}
+
 	// Create or truncate target file
 	targetFile, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
@@ -286,14 +307,56 @@ func watchDirectory(pair SyncPair, ignoreList []string) {
 					}).Errorf("Error syncing file: %v", err)
 				}
 			} else if event.Op&fsnotify.Remove == fsnotify.Remove {
+				// Removing a file should be handled in both source and target
+				var err error
+				if strings.HasPrefix(event.Name, pair.Source) {
+					relativePath, err := filepath.Rel(pair.Source, event.Name)
+					if err != nil {
+						logrus.Errorf("Error getting relative path: %v", err)
+						continue
+					}
+					targetPath = filepath.Join(pair.Target, relativePath)
+				} else if strings.HasPrefix(event.Name, pair.Target) {
+					relativePath, err := filepath.Rel(pair.Target, event.Name)
+					if err != nil {
+						logrus.Errorf("Error getting relative path: %v", err)
+						continue
+					}
+					sourcePath = filepath.Join(pair.Source, relativePath)
+				}
+
 				err = os.Remove(targetPath)
 				if err != nil && !os.IsNotExist(err) {
 					logrus.WithFields(logrus.Fields{
 						"path": targetPath,
 					}).Errorf("Error removing file: %v", err)
 				}
+
+				err = os.Remove(sourcePath)
+				if err != nil && !os.IsNotExist(err) {
+					logrus.WithFields(logrus.Fields{
+						"path": sourcePath,
+					}).Errorf("Error removing file: %v", err)
+				}
 			} else if event.Op&fsnotify.Rename == fsnotify.Rename {
 				// Handle rename as remove and create
+				var err error
+				if strings.HasPrefix(event.Name, pair.Source) {
+					relativePath, err := filepath.Rel(pair.Source, event.Name)
+					if err != nil {
+						logrus.Errorf("Error getting relative path: %v", err)
+						continue
+					}
+					targetPath = filepath.Join(pair.Target, relativePath)
+				} else if strings.HasPrefix(event.Name, pair.Target) {
+					relativePath, err := filepath.Rel(pair.Target, event.Name)
+					if err != nil {
+						logrus.Errorf("Error getting relative path: %v", err)
+						continue
+					}
+					sourcePath = filepath.Join(pair.Source, relativePath)
+				}
+
 				err = os.Remove(targetPath)
 				if err != nil && !os.IsNotExist(err) {
 					logrus.WithFields(logrus.Fields{
