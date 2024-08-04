@@ -530,6 +530,8 @@ func getIcon(s string) []byte {
 }
 
 func main() {
+	// Set logging level to error
+	logrus.SetLevel(logrus.ErrorLevel)
 	// Run the application in the system tray
 	systray.Run(onReady, onExit)
 }
