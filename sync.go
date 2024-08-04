@@ -3,12 +3,14 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/getlantern/systray"
@@ -70,6 +72,17 @@ func syncFile(sourcePath, targetPath string) error {
 			}).Info("Source file does not exist, removed target file")
 			return nil
 		}
+
+		// Handle access denied errors
+		if errors.Is(err, syscall.EACCES) {
+			logrus.WithFields(logrus.Fields{
+				"source": sourcePath,
+				"target": targetPath,
+				"error":  err,
+			}).Warn("Access denied to source file, skipping sync")
+			return nil
+		}
+
 		return fmt.Errorf("error checking source file: %w", err)
 	}
 	defer sourceFile.Close()
@@ -77,6 +90,16 @@ func syncFile(sourcePath, targetPath string) error {
 	// Calculate source file hash
 	sourceHash, err := getFileHash(sourcePath)
 	if err != nil {
+		// Handle incorrect function errors
+		if errors.Is(err, syscall.EINVAL) {
+			logrus.WithFields(logrus.Fields{
+				"source": sourcePath,
+				"target": targetPath,
+				"error":  err,
+			}).Warn("Incorrect function error while calculating source file hash, skipping sync")
+			return nil
+		}
+
 		return fmt.Errorf("error calculating source file hash: %w", err)
 	}
 
@@ -136,6 +159,15 @@ func syncFile(sourcePath, targetPath string) error {
 
 // getFileHash calculates the SHA256 hash of a file
 func getFileHash(filePath string) (string, error) {
+	// Check if the path is a directory
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		return "", err
+	}
+	if fileInfo.IsDir() {
+		return "", fmt.Errorf("cannot calculate hash of directory: %s", filePath)
+	}
+
 	file, err := os.Open(filePath)
 	if err != nil {
 		return "", err
@@ -155,12 +187,30 @@ func syncDirectories(pair SyncPair, ignoreList []string) error {
 	// Sync source to target
 	err := filepath.Walk(pair.Source, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			// Handle access denied errors
+			if errors.Is(err, syscall.EACCES) {
+				logrus.WithFields(logrus.Fields{
+					"source": path,
+					"error":  err,
+				}).Warn("Access denied to source directory, skipping sync")
+				return nil // Continue to the next file or directory
+			}
+
+			// Log other errors and continue
+			logrus.WithFields(logrus.Fields{
+				"source": path,
+				"error":  err,
+			}).Error("Error processing source file or directory")
+			return nil // Continue to the next file or directory
 		}
 
 		relativePath, err := filepath.Rel(pair.Source, path)
 		if err != nil {
-			return err
+			logrus.WithFields(logrus.Fields{
+				"source": path,
+				"error":  err,
+			}).Error("Error getting relative path for source")
+			return nil // Continue to the next file or directory
 		}
 
 		targetPath := filepath.Join(pair.Target, relativePath)
@@ -175,12 +225,21 @@ func syncDirectories(pair SyncPair, ignoreList []string) error {
 		if info.IsDir() {
 			err = os.MkdirAll(targetPath, info.Mode())
 			if err != nil {
-				return err
+				logrus.WithFields(logrus.Fields{
+					"target": targetPath,
+					"error":  err,
+				}).Error("Error creating target directory")
+				return nil // Continue to the next file or directory
 			}
 		} else {
 			err = syncFile(path, targetPath)
 			if err != nil {
-				return err
+				logrus.WithFields(logrus.Fields{
+					"source": path,
+					"target": targetPath,
+					"error":  err,
+				}).Error("Error syncing file")
+				return nil // Continue to the next file or directory
 			}
 		}
 
@@ -190,15 +249,31 @@ func syncDirectories(pair SyncPair, ignoreList []string) error {
 		return err
 	}
 
-	// Sync target to source
+	// Sync target to source (similar error handling as above)
 	err = filepath.Walk(pair.Target, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			if errors.Is(err, syscall.EACCES) {
+				logrus.WithFields(logrus.Fields{
+					"target": path,
+					"error":  err,
+				}).Warn("Access denied to target directory, skipping sync")
+				return nil
+			}
+
+			logrus.WithFields(logrus.Fields{
+				"target": path,
+				"error":  err,
+			}).Error("Error processing target file or directory")
+			return nil
 		}
 
 		relativePath, err := filepath.Rel(pair.Target, path)
 		if err != nil {
-			return err
+			logrus.WithFields(logrus.Fields{
+				"target": path,
+				"error":  err,
+			}).Error("Error getting relative path for target")
+			return nil
 		}
 
 		sourcePath := filepath.Join(pair.Source, relativePath)
@@ -213,14 +288,23 @@ func syncDirectories(pair SyncPair, ignoreList []string) error {
 		if info.IsDir() {
 			err = os.MkdirAll(sourcePath, info.Mode())
 			if err != nil {
-				return err
+				logrus.WithFields(logrus.Fields{
+					"source": sourcePath,
+					"error":  err,
+				}).Error("Error creating source directory")
+				return nil
 			}
 		} else {
 			_, err := os.Stat(sourcePath)
 			if os.IsNotExist(err) { // File exists in target but not in source
 				err = syncFile(path, sourcePath)
 				if err != nil {
-					return err
+					logrus.WithFields(logrus.Fields{
+						"source": path,
+						"target": sourcePath,
+						"error":  err,
+					}).Error("Error syncing file")
+					return nil
 				}
 			}
 		}
@@ -325,18 +409,18 @@ func watchDirectory(pair SyncPair, ignoreList []string) {
 					sourcePath = filepath.Join(pair.Source, relativePath)
 				}
 
-				err = os.Remove(targetPath)
+				err = os.RemoveAll(targetPath)
 				if err != nil && !os.IsNotExist(err) {
 					logrus.WithFields(logrus.Fields{
 						"path": targetPath,
-					}).Errorf("Error removing file: %v", err)
+					}).Errorf("Error removing file or directory: %v", err)
 				}
 
-				err = os.Remove(sourcePath)
+				err = os.RemoveAll(sourcePath)
 				if err != nil && !os.IsNotExist(err) {
 					logrus.WithFields(logrus.Fields{
 						"path": sourcePath,
-					}).Errorf("Error removing file: %v", err)
+					}).Errorf("Error removing file or directory: %v", err)
 				}
 			} else if event.Op&fsnotify.Rename == fsnotify.Rename {
 				// Handle rename as remove and create
@@ -357,11 +441,11 @@ func watchDirectory(pair SyncPair, ignoreList []string) {
 					sourcePath = filepath.Join(pair.Source, relativePath)
 				}
 
-				err = os.Remove(targetPath)
+				err = os.RemoveAll(targetPath)
 				if err != nil && !os.IsNotExist(err) {
 					logrus.WithFields(logrus.Fields{
 						"path": targetPath,
-					}).Errorf("Error removing file: %v", err)
+					}).Errorf("Error removing file or directory: %v", err)
 				}
 				err = syncFile(sourcePath, targetPath)
 				if err != nil {

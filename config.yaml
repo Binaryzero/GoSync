@@ -1,8 +1,11 @@
 sync_pairs:
   - source: C:\Users\willi\Downloads
-    target: C:\Tmp
+    target: \\tower\tools\backups\Downloads
+  - source: C:\Users\willi\Documents
+    target: \\tower\tools\backups\Documents
 
 ignore:
   - "*.tmp"
   - "temp/*"
   - ".git/*"
+  - "*.crdownload"
