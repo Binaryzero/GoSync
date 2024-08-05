@@ -3,9 +3,16 @@ sync_pairs:
     target: \\tower\tools\backups\Downloads
   - source: C:\Users\willi\Documents
     target: \\tower\tools\backups\Documents
+  - source: C:\tools
+    target: \\tower\tools\backups\tools
+  - source: C:\scripts
+    target: \\tower\tools\backups\scripts
+  - source: C:\Backup
+    target: \\tower\tools\backups\backup
 
 ignore:
   - "*.tmp"
   - "temp/*"
   - ".git/*"
   - "*.crdownload"
+log_level: info

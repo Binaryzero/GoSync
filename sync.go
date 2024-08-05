@@ -22,6 +22,7 @@ import (
 type Config struct {
 	SyncPairs []SyncPair `yaml:"sync_pairs"`
 	Ignore    []string   `yaml:"ignore"`
+	LogLevel  string     `yaml:"log_level"` // New field for debugging level
 }
 
 // SyncPair represents a pair of directories to synchronize
@@ -42,6 +43,13 @@ func loadConfig(filename string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
+
+	// Set the logging level based on the configuration
+	level, err := logrus.ParseLevel(config.LogLevel)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing log level: %w", err)
+	}
+	logrus.SetLevel(level)
 
 	return &config, nil
 }
@@ -466,7 +474,7 @@ func watchDirectory(pair SyncPair, ignoreList []string) {
 }
 
 // onReady is called when the systray is ready
-func onReady() {
+func onReady(config *Config) {
 	systray.SetIcon(getIcon("GoSync.ico")) // Replace with your icon file
 	systray.SetTitle("GoSync")
 	systray.SetTooltip("GoSync is running")
@@ -479,13 +487,6 @@ func onReady() {
 			return
 		}
 	}()
-
-	// Start the synchronization and watching logic
-	configFile := "config.yaml"
-	config, err := loadConfig(configFile)
-	if err != nil {
-		logrus.Fatalf("Error loading config file: %v", err)
-	}
 
 	var wg sync.WaitGroup
 	for _, pair := range config.SyncPairs {
@@ -530,8 +531,13 @@ func getIcon(s string) []byte {
 }
 
 func main() {
-	// Set logging level to error
-	logrus.SetLevel(logrus.ErrorLevel)
-	// Run the application in the system tray
-	systray.Run(onReady, onExit)
+	// Start the synchronization and watching logic
+	configFile := "config.yaml"
+	config, err := loadConfig(configFile)
+	if err != nil {
+		logrus.Fatalf("Error loading config file: %v", err)
+	}
+
+	// Run the application in the system tray, passing the loaded configuration
+	systray.Run(func() { onReady(config) }, onExit)
 }
